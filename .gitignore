@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# Credentials
+gcp-credentials.json
+*.json
+
+# OS
+.DS_Store
+Thumbs.db

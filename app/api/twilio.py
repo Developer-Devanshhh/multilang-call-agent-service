@@ -1,7 +1,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import Response
-import json
 import traceback
+import asyncio
 from app.services.session_manager import session_manager
 from app.services.audio_utils import decode_twilio_audio, encode_for_twilio
 
@@ -73,14 +73,28 @@ async def twilio_websocket(websocket: WebSocket):
                 greeting_audio = await session_manager.generate_greeting(session)
                 if greeting_audio and stream_sid:
                     b64_audio = encode_for_twilio(greeting_audio)
+                    
+                    # 8kHz mu-law = 8000 bytes per second
+                    play_duration = len(base64.b64decode(b64_audio)) / 8000.0
+                    session.is_agent_speaking = True
+                    session.audio_buffer.clear()
+                    
                     await websocket.send_text(json.dumps({
                         "event": "media",
                         "streamSid": stream_sid,
                         "media": {"payload": b64_audio}
                     }))
+                    
+                    async def unlock_speech_twilio_greeting():
+                        await asyncio.sleep(play_duration)
+                        if session:
+                            session.audio_buffer.clear()
+                            session.is_agent_speaking = False
+                    
+                    asyncio.create_task(unlock_speech_twilio_greeting())
                 
             elif event == "media":
-                if not session:
+                if not session or session.is_processing or session.is_agent_speaking:
                     continue
                     
                 payload_b64 = msg.get("media", {}).get("payload", "")
@@ -97,11 +111,16 @@ async def twilio_websocket(websocket: WebSocket):
                     if agent_audio and stream_sid:
                         b64_response = encode_for_twilio(agent_audio)
                         
+                        # 8kHz mu-law = 8000 bytes per second
+                        play_duration = len(base64.b64decode(b64_response)) / 8000.0
+                        session.is_agent_speaking = True
+                        
                         # Clear any buffered audio first
                         await websocket.send_text(json.dumps({
                             "event": "clear",
                             "streamSid": stream_sid
                         }))
+                        session.audio_buffer.clear()
                         
                         # Send response audio
                         await websocket.send_text(json.dumps({
@@ -116,6 +135,14 @@ async def twilio_websocket(websocket: WebSocket):
                             "streamSid": stream_sid,
                             "mark": {"name": "agent_response"}
                         }))
+                        
+                        async def unlock_speech_twilio_response():
+                            await asyncio.sleep(play_duration)
+                            if session:
+                                session.audio_buffer.clear()
+                                session.is_agent_speaking = False
+                        
+                        asyncio.create_task(unlock_speech_twilio_response())
                         
                         if session.state == "COMPLETED":
                             print("Call completed, ending session")

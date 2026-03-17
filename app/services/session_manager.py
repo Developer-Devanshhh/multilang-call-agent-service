@@ -52,6 +52,7 @@ class CallSession:
 
         self.user_language = "en-IN"
         self.is_processing = False
+        self.is_agent_speaking = False
         self.greeting_sent = False
 
         # Final extracted complaint data
@@ -88,6 +89,7 @@ class SessionManager:
             audio = await tts_service.synthesize(greeting_text, tts_lang)
             session.greeting_sent = True
             session.state = "COLLECTING"
+            # Flag will be managed by the WebSocket handler as it plays the audio
             return audio
         except Exception as e:
             print(f"[Greeting Error] {e}")
