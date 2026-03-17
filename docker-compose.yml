@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  voice-agent:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Connects to host's MongoDB for development
+      # In production, this would point to the civicai mongodb container
+      - MONGODB_URI=mongodb://host.docker.internal:27017/civicai
+      - ENVIRONMENT=development
+      - TELEPHONY_PROVIDER=demo
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./static:/app/static
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

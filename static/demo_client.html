@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JanVedha AI - Voice Agent Demo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 3rem 1rem;
+        }
+        .card {
+            max-width: 700px;
+            width: 100%;
+            background: #1e293b;
+            border-radius: 16px;
+            padding: 2rem;
+            border: 1px solid #334155;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.4);
+        }
+        h1 { font-size: 1.75rem; color: #60a5fa; margin-bottom: 0.25rem; }
+        .subtitle { color: #94a3b8; margin-bottom: 2rem; font-size: 0.9rem; }
+        .btn-group { display: flex; justify-content: center; gap: 1rem; margin-bottom: 1.5rem; }
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 50px;
+            border: none;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .btn-call { background: #2563eb; color: white; }
+        .btn-call:hover { background: #1d4ed8; transform: scale(1.02); }
+        .btn-end { background: #dc2626; color: white; display: none; }
+        .btn-end:hover { background: #b91c1c; }
+        #status {
+            text-align: center;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: #64748b;
+            margin-bottom: 1.5rem;
+            min-height: 1.2em;
+        }
+        .status-connecting { color: #f59e0b; }
+        .status-connected { color: #22c55e; animation: pulse 2s ease-in-out infinite; }
+        .status-processing { color: #a78bfa; }
+        .status-disconnected { color: #64748b; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .transcript-box {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 1rem;
+            height: 350px;
+            overflow-y: auto;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+        .msg { margin-bottom: 0.75rem; padding: 0.6rem 0.8rem; border-radius: 8px; max-width: 85%; }
+        .msg-citizen { background: #1e3a5f; color: #93c5fd; margin-left: auto; text-align: right; }
+        .msg-agent { background: #1a2e1a; color: #86efac; }
+        .msg-label { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 0.25rem; opacity: 0.7; }
+        .completion-banner {
+            display: none;
+            background: #14532d;
+            border: 1px solid #22c55e;
+            border-radius: 12px;
+            padding: 1rem;
+            margin-top: 1rem;
+            font-size: 0.85rem;
+            color: #bbf7d0;
+        }
+        .completion-banner h3 { color: #4ade80; margin-bottom: 0.5rem; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🏛 JanVedha AI</h1>
+        <p class="subtitle">Real-time Voice Complaint Registration Agent</p>
+
+        <div class="btn-group">
+            <button id="callBtn" class="btn btn-call">📞 Start Call</button>
+            <button id="endBtn" class="btn btn-end">✖ End Call</button>
+        </div>
+
+        <div id="status" class="status-disconnected">Ready to connect</div>
+
+        <div class="transcript-box" id="transcriptBox">
+            <div style="color:#475569; text-align:center; margin-top:8rem;">
+                Click "Start Call" and speak your complaint in any Indian language
+            </div>
+        </div>
+
+        <div class="completion-banner" id="completionBanner">
+            <h3>✅ Complaint Registered!</h3>
+            <div id="ticketDetails"></div>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        let audioContext;
+        let processor;
+        let source;
+        let micStream;
+        let pcmBuffer = [];
+        let sendInterval;
+        let isAgentSpeaking = true; // Wait for initial greeting
+        
+        const callBtn = document.getElementById('callBtn');
+        const endBtn = document.getElementById('endBtn');
+        const statusBox = document.getElementById('status');
+        const transcriptBox = document.getElementById('transcriptBox');
+        const completionBanner = document.getElementById('completionBanner');
+        const ticketDetails = document.getElementById('ticketDetails');
+
+        function setStatus(text, cls) {
+            statusBox.textContent = text;
+            statusBox.className = 'status-' + cls;
+        }
+
+        function renderTranscript(messages) {
+            transcriptBox.innerHTML = '';
+            messages.forEach(m => {
+                const div = document.createElement('div');
+                const role = m.role === 'citizen' ? 'citizen' : 'agent';
+                div.className = `msg msg-${role}`;
+                div.innerHTML = `<div class="msg-label">${role === 'citizen' ? '🗣️ You' : '🤖 Agent'}</div>${m.text}`;
+                transcriptBox.appendChild(div);
+            });
+            transcriptBox.scrollTop = transcriptBox.scrollHeight;
+        }
+
+        // Convert Float32 samples to Int16 PCM
+        function float32ToInt16(float32Array) {
+            const int16 = new Int16Array(float32Array.length);
+            for (let i = 0; i < float32Array.length; i++) {
+                let s = Math.max(-1, Math.min(1, float32Array[i]));
+                int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            return int16;
+        }
+
+        // Downsample from browser's sample rate to 8000 Hz
+        function downsample(buffer, fromRate, toRate) {
+            if (fromRate === toRate) return buffer;
+            const ratio = fromRate / toRate;
+            const newLength = Math.round(buffer.length / ratio);
+            const result = new Float32Array(newLength);
+            for (let i = 0; i < newLength; i++) {
+                const idx = Math.round(i * ratio);
+                result[i] = buffer[idx] || 0;
+            }
+            return result;
+        }
+
+        callBtn.onclick = async () => {
+            setStatus('Connecting to AI agent...', 'connecting');
+            completionBanner.style.display = 'none';
+            
+            const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const host = window.location.host;
+            ws = new WebSocket(`${protocol}://${host}/api/demo/ws`);
+
+            ws.onopen = async () => {
+                callBtn.style.display = 'none';
+                endBtn.style.display = 'flex';
+                setStatus('🎙️ Connected — Speak your complaint...', 'connected');
+
+                try {
+                    micStream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: { 
+                            sampleRate: 16000, 
+                            channelCount: 1, 
+                            echoCancellation: true,
+                            noiseSuppression: true 
+                        } 
+                    });
+                    
+                    audioContext = new AudioContext({ sampleRate: 16000 });
+                    source = audioContext.createMediaStreamSource(micStream);
+                    
+                    // ScriptProcessorNode to capture raw PCM
+                    processor = audioContext.createScriptProcessor(4096, 1, 1);
+                    processor.onaudioprocess = (e) => {
+                        if (isAgentSpeaking) return; // Mute mic while agent speaks
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        // Downsample to 8kHz
+                        const downsampled = downsample(inputData, audioContext.sampleRate, 8000);
+                        const pcm16 = float32ToInt16(downsampled);
+                        pcmBuffer.push(...pcm16);
+                    };
+                    
+                    source.connect(processor);
+                    processor.connect(audioContext.destination);
+                    
+                    // Send accumulated PCM every 500ms
+                    sendInterval = setInterval(() => {
+                        if (pcmBuffer.length > 0 && ws.readyState === WebSocket.OPEN && !isAgentSpeaking) {
+                            const int16Array = new Int16Array(pcmBuffer);
+                            pcmBuffer = [];
+                            
+                            // Convert to base64
+                            const uint8 = new Uint8Array(int16Array.buffer);
+                            let binary = '';
+                            for (let i = 0; i < uint8.length; i++) {
+                                binary += String.fromCharCode(uint8[i]);
+                            }
+                            const b64 = btoa(binary);
+                            
+                            ws.send(JSON.stringify({
+                                event: "media",
+                                media: { payload: b64, format: "pcm_s16le_8000" }
+                            }));
+                        }
+                    }, 500);
+                    
+                } catch (err) {
+                    setStatus('⚠️ Microphone access denied', 'disconnected');
+                    console.error("Mic error:", err);
+                }
+            };
+
+            ws.onmessage = e => {
+                const msg = JSON.parse(e.data);
+                
+                if (msg.event === "media") {
+                    isAgentSpeaking = true;
+                    pcmBuffer = []; // Clear any residual audio
+                    setStatus('🔊 Agent speaking...', 'processing');
+                    const audio = new Audio("data:audio/wav;base64," + msg.media.payload);
+                    audio.onended = () => {
+                        isAgentSpeaking = false;
+                        setStatus('🎙️ Listening...', 'connected');
+                    };
+                    audio.play().catch(err => console.warn("Audio play blocked:", err));
+                    
+                } else if (msg.event === "transcript") {
+                    renderTranscript(msg.transcript);
+                    
+                } else if (msg.event === "completed") {
+                    completionBanner.style.display = 'block';
+                    const d = msg.ticket || {};
+                    ticketDetails.innerHTML = `
+                        <b>Issue:</b> ${d.issue_description || 'N/A'}<br>
+                        <b>Location:</b> ${d.location_text || 'N/A'}<br>
+                        <b>Department:</b> ${d.dept_id || 'N/A'}<br>
+                        <b>Severity:</b> ${d.severity || 'N/A'}
+                    `;
+                    setStatus('✅ Complaint registered!', 'connected');
+                }
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket error:", err);
+                setStatus('❌ Connection error', 'disconnected');
+            };
+
+            ws.onclose = () => endCall();
+        };
+
+        endBtn.onclick = () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ event: "stop" }));
+                ws.close();
+            }
+            endCall();
+        };
+
+        function endCall() {
+            if (sendInterval) clearInterval(sendInterval);
+            if (processor) { processor.disconnect(); processor = null; }
+            if (source) { source.disconnect(); source = null; }
+            if (audioContext) { audioContext.close(); audioContext = null; }
+            if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+            pcmBuffer = [];
+            callBtn.style.display = 'flex';
+            endBtn.style.display = 'none';
+            setStatus('Disconnected', 'disconnected');
+        }
+    </script>
+</body>
+</html>
